@@ -154,111 +154,99 @@ static int dmp_map(struct dm_target *ti, struct bio *bio)
 	}
 	pr_info("\n");
 	bio_set_dev(bio, lc->dev->bdev);
+	bio->bi_iter.bi_sector = dm_target_offset(ti, bio->bi_iter.bi_sector);
 	return DM_MAPIO_REMAPPED;
 }
 
-// static void dmp_status(struct dm_target *ti, status_type_t type,
-// 			  unsigned int status_flags, char *result, unsigned int maxlen)
-// {
-// 	struct dmp_c *lc = ti->private;
-// 	size_t sz = 0;
+static void dmp_status(struct dm_target *ti, status_type_t type,
+			  unsigned int status_flags, char *result, unsigned int maxlen)
+{
+	struct dmp_c *lc = ti->private;
+	size_t sz = 0;
 
-// 	switch (type) {
-// 	case STATUSTYPE_INFO:
-// 		result[0] = '\0';
-// 		break;
+	switch (type) {
+	case STATUSTYPE_INFO:
+		result[0] = '\0';
+		break;
 
-// 	case STATUSTYPE_TABLE:
-// 		DMEMIT("%s %llu", lc->dev->name, (unsigned long long)lc->start);
-// 		break;
+	case STATUSTYPE_TABLE:
+		DMEMIT("%s", lc->dev->name);
+		break;
 
-// 	case STATUSTYPE_IMA:
-// 		DMEMIT_TARGET_NAME_VERSION(ti->type);
-// 		DMEMIT(",device_name=%s,start=%llu;", lc->dev->name,
-// 		       (unsigned long long)lc->start);
-// 		break;
-// 	}
-// }
+	case STATUSTYPE_IMA:
+		DMEMIT_TARGET_NAME_VERSION(ti->type);
+		DMEMIT(",device_name=%s;", lc->dev->name);
+		break;
+	}
+}
 
-// static int dmp_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
-// 				unsigned int cmd, unsigned long arg,
-// 				bool *forward)
-// {
-// 	struct dmp_c *lc = ti->private;
-// 	struct dm_dev *dev = lc->dev;
+static int dmp_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
+				unsigned int cmd, unsigned long arg,
+				bool *forward)
+{
+	struct dmp_c *lc = ti->private;
+	struct dm_dev *dev = lc->dev;
+	*bdev = dev->bdev;
+	if (ti->len != bdev_nr_sectors(dev->bdev))
+		return 1;
+	return 0;
+}
 
-// 	*bdev = dev->bdev;
+#ifdef CONFIG_BLK_DEV_ZONED
+static int dmp_report_zones(struct dm_target *ti,
+		struct dm_report_zones_args *args, unsigned int nr_zones)
+{
+	struct dmp_c *lc = ti->private;
+	return dm_report_zones(lc->dev->bdev, 0,
+			       dm_target_offset(ti, args->next_sector),
+			       args, nr_zones);
+}
+#else
+#define dmp_report_zones NULL
+#endif
 
-// 	/*
-// 	 * Only pass ioctls through if the device sizes match exactly.
-// 	 */
-// 	if (lc->start || ti->len != bdev_nr_sectors(dev->bdev))
-// 		return 1;
-// 	return 0;
-// }
+static int dmp_iterate_devices(struct dm_target *ti,
+				  iterate_devices_callout_fn fn, void *data)
+{
+	struct dmp_c *lc = ti->private;
+	return fn(ti, lc->dev, 0, ti->len, data);
+}
 
-// #ifdef CONFIG_BLK_DEV_ZONED
-// static int dmp_report_zones(struct dm_target *ti,
-// 		struct dm_report_zones_args *args, unsigned int nr_zones)
-// {
-// 	struct dmp_c *lc = ti->private;
+#if IS_ENABLED(CONFIG_FS_DAX)
+static struct dax_device *dmp_dax_pgoff(struct dm_target *ti, pgoff_t *pgoff)
+{
+	struct dmp_c *lc = ti->private;
+	sector_t sector = dm_target_offset(ti, *pgoff << PAGE_SECTORS_SHIFT);
+	*pgoff = (get_start_sect(lc->dev->bdev) + sector) >> PAGE_SECTORS_SHIFT;
+	return lc->dev->dax_dev;
+}
 
-// 	return dm_report_zones(lc->dev->bdev, lc->start,
-// 			       dmp_map_sector(ti, args->next_sector),
-// 			       args, nr_zones);
-// }
-// #else
-// #define dmp_report_zones NULL
-// #endif
+static long dmp_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
+		long nr_pages, enum dax_access_mode mode, void **kaddr,
+		unsigned long *pfn)
+{
+	struct dax_device *dax_dev = dmp_dax_pgoff(ti, &pgoff);
+	return dax_direct_access(dax_dev, pgoff, nr_pages, mode, kaddr, pfn);
+}
 
-// static int dmp_iterate_devices(struct dm_target *ti,
-// 				  iterate_devices_callout_fn fn, void *data)
-// {
-// 	struct dmp_c *lc = ti->private;
+static int dmp_dax_zero_page_range(struct dm_target *ti, pgoff_t pgoff,
+				      size_t nr_pages)
+{
+	struct dax_device *dax_dev = dmp_dax_pgoff(ti, &pgoff);
+	return dax_zero_page_range(dax_dev, pgoff, nr_pages);
+}
 
-// 	return fn(ti, lc->dev, lc->start, ti->len, data);
-// }
-
-// #if IS_ENABLED(CONFIG_FS_DAX)
-// static struct dax_device *dmp_dax_pgoff(struct dm_target *ti, pgoff_t *pgoff)
-// {
-// 	struct dmp_c *lc = ti->private;
-// 	sector_t sector = dmp_map_sector(ti, *pgoff << PAGE_SECTORS_SHIFT);
-
-// 	*pgoff = (get_start_sect(lc->dev->bdev) + sector) >> PAGE_SECTORS_SHIFT;
-// 	return lc->dev->dax_dev;
-// }
-
-// static long dmp_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
-// 		long nr_pages, enum dax_access_mode mode, void **kaddr,
-// 		unsigned long *pfn)
-// {
-// 	struct dax_device *dax_dev = dmp_dax_pgoff(ti, &pgoff);
-
-// 	return dax_direct_access(dax_dev, pgoff, nr_pages, mode, kaddr, pfn);
-// }
-
-// static int dmp_dax_zero_page_range(struct dm_target *ti, pgoff_t pgoff,
-// 				      size_t nr_pages)
-// {
-// 	struct dax_device *dax_dev = dmp_dax_pgoff(ti, &pgoff);
-
-// 	return dax_zero_page_range(dax_dev, pgoff, nr_pages);
-// }
-
-// static size_t dmp_dax_recovery_write(struct dm_target *ti, pgoff_t pgoff,
-// 		void *addr, size_t bytes, struct iov_iter *i)
-// {
-// 	struct dax_device *dax_dev = dmp_dax_pgoff(ti, &pgoff);
-
-// 	return dax_recovery_write(dax_dev, pgoff, addr, bytes, i);
-// }
-
-// #else
-// #define dmp_dax_direct_access NULL
-// #define dmp_dax_zero_page_range NULL
-// #define dmp_dax_recovery_write NULL
-// #endif
+static size_t dmp_dax_recovery_write(struct dm_target *ti, pgoff_t pgoff,
+		void *addr, size_t bytes, struct iov_iter *i)
+{
+	struct dax_device *dax_dev = dmp_dax_pgoff(ti, &pgoff);
+	return dax_recovery_write(dax_dev, pgoff, addr, bytes, i);
+}
+#else
+#define dmp_dax_direct_access NULL
+#define dmp_dax_zero_page_range NULL
+#define dmp_dax_recovery_write NULL
+#endif
 
 void dmp_resume (struct dm_target *ti)
 {
@@ -285,18 +273,18 @@ static struct target_type dmp_target = {
 	.features = DM_TARGET_PASSES_INTEGRITY | DM_TARGET_NOWAIT |
 		    DM_TARGET_ZONED_HM | DM_TARGET_PASSES_CRYPTO |
 		    DM_TARGET_ATOMIC_WRITES,
-	// .report_zones = dmp_report_zones,
+	.report_zones = dmp_report_zones,
 	.module = THIS_MODULE,
 	.ctr    = dmp_ctr,
 	.dtr    = dmp_dtr,
 	.map    = dmp_map,
 	.resume = dmp_resume,
-	// .status = dmp_status,
-	// .prepare_ioctl = dmp_prepare_ioctl,
-	// .iterate_devices = dmp_iterate_devices,
-	// .direct_access = dmp_dax_direct_access,
-	// .dax_zero_page_range = dmp_dax_zero_page_range,
-	// .dax_recovery_write = dmp_dax_recovery_write,
+	.status = dmp_status,
+	.prepare_ioctl = dmp_prepare_ioctl,
+	.iterate_devices = dmp_iterate_devices,
+	.direct_access = dmp_dax_direct_access,
+	.dax_zero_page_range = dmp_dax_zero_page_range,
+	.dax_recovery_write = dmp_dax_recovery_write,
 };
 
 MODULE_AUTHOR("Nikita Verbin");
