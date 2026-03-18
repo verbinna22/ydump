@@ -26,7 +26,7 @@ static ssize_t device_attr_show(struct device *dev, struct device_attribute *att
     struct device_stat *st;
     st = dev_get_drvdata(dev);
 	mutex_lock(&st->m);
-    int ret = sprintf(buf,
+    int ret = sysfs_emit(buf,
 		"Output:\n"
 		"\tread:\n"
 		"\t\treqs:%lld\n"
@@ -43,7 +43,7 @@ static ssize_t device_attr_show(struct device *dev, struct device_attribute *att
 		GET_AVG(st->w_sum_size, st->w_qnum),
 		st->r_qnum + st->w_qnum,
 		GET_AVG(st->r_sum_size + st->w_sum_size, st->w_qnum + st->r_qnum)
-	); // TODO: buf len
+	);
 	mutex_unlock(&st->m);
 	return ret;
 }
@@ -86,10 +86,10 @@ static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		ti->error = "Invalid argument count";
 		return -EINVAL;
 	}
-    struct mapped_device *md = dm_table_get_md(ti->table); // TODO
+    struct mapped_device *md = dm_table_get_md(ti->table);
     struct device *dev = disk_to_dev(dm_disk(md));
 	struct device_stat *st;
-	st = dev_get_drvdata(dev); // TODO
+	st = dev_get_drvdata(dev);
     if (!st) {
         st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
         if (!st) {
@@ -130,7 +130,7 @@ static void dmp_dtr(struct dm_target *ti)
 static int dmp_map(struct dm_target *ti, struct bio *bio)
 {
 	struct dmp_c *lc = ti->private;
-    struct mapped_device *md = dm_table_get_md(ti->table); // TODO
+    struct mapped_device *md = dm_table_get_md(ti->table);
     struct device *dev = disk_to_dev(dm_disk(md));
 	pr_info("map: %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
     switch (bio_op(bio)) {
@@ -250,18 +250,24 @@ static size_t dmp_dax_recovery_write(struct dm_target *ti, pgoff_t pgoff,
 
 void dmp_resume (struct dm_target *ti)
 {
-	struct mapped_device *md = dm_table_get_md(ti->table); // TODO
-    struct device *dev = disk_to_dev(dm_disk(md)); // TODO:
+	struct mapped_device *md = dm_table_get_md(ti->table);
+    struct device *dev = disk_to_dev(dm_disk(md));
 	struct device_stat *st;
-	st = dev_get_drvdata(dev); // TODO
+	st = dev_get_drvdata(dev);
     if (!st->is_init) {
 		mutex_lock(&st->m);
 		if (!st->is_init) {
 			st->is_init = true;
 			dev_set_drvdata(dev, st);
 			pr_info("resume %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
-			device_create_file(dev, &dev_attr_device_attr); // TODO: check
-			devm_add_action_or_reset(dev, remove_file, dev); // TODO: check
+			if (device_create_file(dev, &dev_attr_device_attr) < 0) {
+				DMWARN("param can't be created\n");
+				return;
+			}
+			if (devm_add_action_or_reset(dev, remove_file, dev) < 0) {
+				DMWARN("param autoremove can't be registered\n");
+				return;
+			}
 		}
 		mutex_unlock(&st->m);
 	}
@@ -295,7 +301,7 @@ static int __init dmp_init(void)
 {
     int r = dm_register_target(&dmp_target);
     if (r < 0) {
-        DMERR("registration failed");
+        DMWARN("registration failed");
     } else {
         DMINFO("module loaded");
     }
