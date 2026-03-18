@@ -5,28 +5,46 @@
 #include <linux/dax.h>
 #include <linux/slab.h>
 #include <linux/device-mapper.h>
+#include <linux/sysfs.h>
 
 #define DM_MSG_PREFIX "dmp"
 
-struct dmp_c {
-	struct dm_dev *dev;
-	// sector_t start;
+struct device_stat {
     ullong r_qnum;
     ullong w_qnum;
     ullong r_sum_size;
     ullong w_sum_size;
 };
 
+static ssize_t device_attr_show(struct device *dev, struct device_attribute *attr,
+			    char *buf)
+{
+    struct device_stat *st;
+    st = dev_get_drvdata(dev);
+    return sprintf(buf, "%lld\n", st->r_qnum); // TODO: buf len
+}
+
+static DEVICE_ATTR_RO(device_attr);
+
+struct dmp_c {
+	struct dm_dev *dev;
+};
+
 #define assert(...) WARN_ON(!(__VA_ARGS__))
 
-static void dmp_read(struct dmp_c *d, ullong size)
+static void dmp_read(struct device_stat *d, ullong size)
+{
+    assert(size % SECTOR_SIZE == 0);
+	d->r_qnum++;
+}
+
+static void dmp_write(struct device_stat *d, ullong size)
 {
     assert(size % SECTOR_SIZE == 0);
 }
 
-static void dmp_write(struct dmp_c *d, ullong size)
-{
-    assert(size % SECTOR_SIZE == 0);
+static void remove_file(void *f) {
+    device_remove_file((struct device *)f, &dev_attr_device_attr);
 }
 
 static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
@@ -38,15 +56,13 @@ static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		ti->error = "Invalid argument count";
 		return -EINVAL;
 	}
+    struct mapped_device *md = dm_table_get_md(ti->table); // TODO
+    struct device *dev = disk_to_dev(dm_disk(md));
     lc = kmalloc(sizeof(*lc), GFP_KERNEL);
 	if (lc == NULL) {
 		ti->error = "Cannot allocate dmp context";
 		return -ENOMEM;
 	}
-    lc->r_qnum = 0;
-    lc->w_qnum = 0;
-    lc->r_sum_size = 0;
-    lc->w_sum_size = 0;
     ret = dm_get_device(ti, argv[0], dm_table_get_mode(ti->table), &lc->dev);
 	if (ret) {
 		ti->error = "Device lookup failed";
@@ -68,23 +84,37 @@ static void dmp_dtr(struct dm_target *ti)
 {
 	struct dmp_c *lc = ti->private;
 	dm_put_device(ti, lc->dev);
+    // kobject_put(&lc->dir1);
+    // wait_for_completion(dm_get_completion_from_kobject(&lc->dir1)); // TODO: get
 	kfree(lc);
 }
 
 static int dmp_map(struct dm_target *ti, struct bio *bio)
 {
 	struct dmp_c *lc = ti->private;
+    struct mapped_device *md = dm_table_get_md(ti->table); // TODO
+    struct device *dev = disk_to_dev(dm_disk(md));
+	pr_info("map: %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
     switch (bio_op(bio)) {
 	case REQ_OP_READ:
-        dmp_read(lc, bio->bi_iter.bi_size);
+		if (!(bio->bi_opf & REQ_RAHEAD) && !(bio->bi_opf & REQ_META)) {
+			if (strstr(current->comm, "udev") == NULL) {
+				pr_info("r%s", current->comm);
+				dmp_read(dev_get_drvdata(dev), bio->bi_iter.bi_size);
+			}
+		}
 		break;
     case REQ_OP_ZONE_APPEND:
+		pr_info("1");
     case REQ_OP_WRITE_ZEROES:
+		pr_info("2");
 	case REQ_OP_WRITE:
-		dmp_write(lc, bio->bi_iter.bi_size);
+		pr_info("3");
+		dmp_write(dev_get_drvdata(dev), bio->bi_iter.bi_size);
 		break;
     default:
 	}
+	pr_info("\n");
 	bio_set_dev(bio, lc->dev->bdev);
 	return DM_MAPIO_REMAPPED;
 }
@@ -192,6 +222,26 @@ static int dmp_map(struct dm_target *ti, struct bio *bio)
 // #define dmp_dax_recovery_write NULL
 // #endif
 
+void dmp_resume (struct dm_target *ti)
+{
+	struct mapped_device *md = dm_table_get_md(ti->table); // TODO
+    struct device *dev = disk_to_dev(dm_disk(md)); // TODO:
+	struct device_stat *st;
+	//pr_info("resume' %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
+    st = dev_get_drvdata(dev); // TODO
+    if (!st) {
+        st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
+        if (!st) {
+            DMERR("no stat");
+			return;
+        }
+        dev_set_drvdata(dev, st);
+		pr_info("resume %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
+		device_create_file(dev, &dev_attr_device_attr); // TODO: check
+		devm_add_action_or_reset(dev, remove_file, dev); // TODO: check
+    }
+}
+
 static struct target_type dmp_target = {
 	.name   = "dmp",
 	.version = {1, 5, 0},
@@ -203,6 +253,7 @@ static struct target_type dmp_target = {
 	.ctr    = dmp_ctr,
 	.dtr    = dmp_dtr,
 	.map    = dmp_map,
+	.resume = dmp_resume,
 	// .status = dmp_status,
 	// .prepare_ioctl = dmp_prepare_ioctl,
 	// .iterate_devices = dmp_iterate_devices,
@@ -215,4 +266,24 @@ MODULE_AUTHOR("Nikita Verbin");
 MODULE_DESCRIPTION(DM_NAME " store and show statistics");
 MODULE_LICENSE("GPL");
 
-module_dm(dmp);
+//module_dm(dmp);
+
+static int __init dmp_init(void)
+{
+    int r = dm_register_target(&dmp_target);
+    if (r < 0) {
+        DMERR("registration failed");
+    } else {
+        DMINFO("module loaded");
+    }
+    return r;
+}
+
+static void __exit dmp_exit(void)
+{
+    dm_unregister_target(&dmp_target);
+    DMINFO("module unloaded");
+}
+
+module_init(dmp_init);
+module_exit(dmp_exit);
