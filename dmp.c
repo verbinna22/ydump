@@ -10,13 +10,15 @@
 #define DM_MSG_PREFIX "dmp"
 
 struct device_stat {
-    ullong r_qnum;
-    ullong w_qnum;
+    uint r_qnum;
+    uint w_qnum;
     ullong r_sum_size;
     ullong w_sum_size;
 	bool is_init;
 	struct mutex m;
 };
+
+#define GET_AVG(sum64, num32) (((num32) == 0) ? 0 : (((sum64) / (num32)) << SECTOR_SHIFT) + ((((sum64) % (num32)) << SECTOR_SHIFT) / (num32)))
 
 static ssize_t device_attr_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
@@ -24,7 +26,24 @@ static ssize_t device_attr_show(struct device *dev, struct device_attribute *att
     struct device_stat *st;
     st = dev_get_drvdata(dev);
 	mutex_lock(&st->m);
-    int ret = sprintf(buf, "%lld\n", st->r_qnum); // TODO: buf len
+    int ret = sprintf(buf,
+		"Output:\n"
+		"\tread:\n"
+		"\t\treqs:%lld\n"
+		"\t\tavg size:%lld\n"
+		"\twrite:\n"
+		"\t\treqs:%lld\n"
+		"\t\tavg size:%lld\n"
+		"\ttotal:\n"
+		"\t\treqs:%lld\n"
+		"\t\tavg size:%lld\n",
+		st->r_qnum,
+		GET_AVG(st->r_sum_size, st->r_qnum),
+		st->w_qnum,
+		GET_AVG(st->w_sum_size, st->w_qnum),
+		st->r_qnum + st->w_qnum,
+		GET_AVG(st->r_sum_size + st->w_sum_size, st->w_qnum + st->r_qnum)
+	); // TODO: buf len
 	mutex_unlock(&st->m);
 	return ret;
 }
@@ -42,6 +61,7 @@ static void dmp_read(struct device_stat *d, ullong size)
     assert(size % SECTOR_SIZE == 0);
 	mutex_lock(&d->m);
 	d->r_qnum++;
+	d->r_sum_size += (size >> SECTOR_SHIFT);
 	mutex_unlock(&d->m);
 }
 
@@ -49,6 +69,8 @@ static void dmp_write(struct device_stat *d, ullong size)
 {
     assert(size % SECTOR_SIZE == 0);
 	mutex_lock(&d->m);
+	d->w_qnum++;
+	d->w_sum_size += (size >> SECTOR_SHIFT);
 	mutex_unlock(&d->m);
 }
 
@@ -60,7 +82,6 @@ static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct dmp_c *lc;
 	int ret;
-
 	if (argc != 1) {
 		ti->error = "Invalid argument count";
 		return -EINVAL;
