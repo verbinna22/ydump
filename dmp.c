@@ -29,14 +29,14 @@ static ssize_t device_attr_show(struct device *dev, struct device_attribute *att
     int ret = sysfs_emit(buf,
 		"Output:\n"
 		"\tread:\n"
-		"\t\treqs:%lld\n"
-		"\t\tavg size:%lld\n"
+		"\t\treqs:%u\n"
+		"\t\tavg size:%llu\n"
 		"\twrite:\n"
-		"\t\treqs:%lld\n"
-		"\t\tavg size:%lld\n"
+		"\t\treqs:%u\n"
+		"\t\tavg size:%llu\n"
 		"\ttotal:\n"
-		"\t\treqs:%lld\n"
-		"\t\tavg size:%lld\n",
+		"\t\treqs:%u\n"
+		"\t\tavg size:%llu\n",
 		st->r_qnum,
 		GET_AVG(st->r_sum_size, st->r_qnum),
 		st->w_qnum,
@@ -96,6 +96,7 @@ static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
             ti->error = "Cannot allocate device context";
 			return -ENOMEM;
         }
+		dev_set_drvdata(dev, st);
 		mutex_init(&st->m);
     }
     lc = kmalloc(sizeof(*lc), GFP_KERNEL);
@@ -132,27 +133,21 @@ static int dmp_map(struct dm_target *ti, struct bio *bio)
 	struct dmp_c *lc = ti->private;
     struct mapped_device *md = dm_table_get_md(ti->table);
     struct device *dev = disk_to_dev(dm_disk(md));
-	pr_info("map: %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
     switch (bio_op(bio)) {
 	case REQ_OP_READ:
 		if (!(bio->bi_opf & REQ_RAHEAD) && !(bio->bi_opf & REQ_META)) {
 			if (strstr(current->comm, "udev") == NULL) {
-				pr_info("r %s", current->comm);
 				dmp_read(dev_get_drvdata(dev), bio->bi_iter.bi_size);
 			}
 		}
 		break;
     case REQ_OP_ZONE_APPEND:
-		pr_info("1");
     case REQ_OP_WRITE_ZEROES:
-		pr_info("2");
 	case REQ_OP_WRITE:
-		pr_info("3");
 		dmp_write(dev_get_drvdata(dev), bio->bi_iter.bi_size);
 		break;
     default:
 	}
-	pr_info("\n");
 	bio_set_dev(bio, lc->dev->bdev);
 	bio->bi_iter.bi_sector = dm_target_offset(ti, bio->bi_iter.bi_sector);
 	return DM_MAPIO_REMAPPED;
@@ -258,8 +253,6 @@ void dmp_resume (struct dm_target *ti)
 		mutex_lock(&st->m);
 		if (!st->is_init) {
 			st->is_init = true;
-			dev_set_drvdata(dev, st);
-			pr_info("resume %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
 			if (device_create_file(dev, &dev_attr_device_attr) < 0) {
 				DMWARN("param can't be created\n");
 				return;
