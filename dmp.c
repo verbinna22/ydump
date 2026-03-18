@@ -15,6 +15,7 @@ struct device_stat {
     ullong r_sum_size;
     ullong w_sum_size;
 	bool is_init;
+	struct mutex m;
 };
 
 static ssize_t device_attr_show(struct device *dev, struct device_attribute *attr,
@@ -22,7 +23,10 @@ static ssize_t device_attr_show(struct device *dev, struct device_attribute *att
 {
     struct device_stat *st;
     st = dev_get_drvdata(dev);
-    return sprintf(buf, "%lld\n", st->r_qnum); // TODO: buf len
+	mutex_lock(&st->m);
+    int ret = sprintf(buf, "%lld\n", st->r_qnum); // TODO: buf len
+	mutex_unlock(&st->m);
+	return ret;
 }
 
 static DEVICE_ATTR_RO(device_attr);
@@ -36,12 +40,16 @@ struct dmp_c {
 static void dmp_read(struct device_stat *d, ullong size)
 {
     assert(size % SECTOR_SIZE == 0);
+	mutex_lock(&d->m);
 	d->r_qnum++;
+	mutex_unlock(&d->m);
 }
 
 static void dmp_write(struct device_stat *d, ullong size)
 {
     assert(size % SECTOR_SIZE == 0);
+	mutex_lock(&d->m);
+	mutex_unlock(&d->m);
 }
 
 static void remove_file(void *f) {
@@ -67,6 +75,7 @@ static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
             ti->error = "Cannot allocate device context";
 			return -ENOMEM;
         }
+		mutex_init(&st->m);
     }
     lc = kmalloc(sizeof(*lc), GFP_KERNEL);
 	if (lc == NULL) {
@@ -237,12 +246,16 @@ void dmp_resume (struct dm_target *ti)
 	struct device_stat *st;
 	st = dev_get_drvdata(dev); // TODO
     if (!st->is_init) {
-		st->is_init = true;
-        dev_set_drvdata(dev, st);
-		pr_info("resume %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
-		device_create_file(dev, &dev_attr_device_attr); // TODO: check
-		devm_add_action_or_reset(dev, remove_file, dev); // TODO: check
-    }
+		mutex_lock(&st->m);
+		if (!st->is_init) {
+			st->is_init = true;
+			dev_set_drvdata(dev, st);
+			pr_info("resume %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
+			device_create_file(dev, &dev_attr_device_attr); // TODO: check
+			devm_add_action_or_reset(dev, remove_file, dev); // TODO: check
+		}
+		mutex_unlock(&st->m);
+	}
 }
 
 static struct target_type dmp_target = {
