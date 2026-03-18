@@ -14,6 +14,7 @@ struct device_stat {
     ullong w_qnum;
     ullong r_sum_size;
     ullong w_sum_size;
+	bool is_init;
 };
 
 static ssize_t device_attr_show(struct device *dev, struct device_attribute *attr,
@@ -58,6 +59,15 @@ static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
     struct mapped_device *md = dm_table_get_md(ti->table); // TODO
     struct device *dev = disk_to_dev(dm_disk(md));
+	struct device_stat *st;
+	st = dev_get_drvdata(dev); // TODO
+    if (!st) {
+        st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
+        if (!st) {
+            ti->error = "Cannot allocate device context";
+			return -ENOMEM;
+        }
+    }
     lc = kmalloc(sizeof(*lc), GFP_KERNEL);
 	if (lc == NULL) {
 		ti->error = "Cannot allocate dmp context";
@@ -84,9 +94,7 @@ static void dmp_dtr(struct dm_target *ti)
 {
 	struct dmp_c *lc = ti->private;
 	dm_put_device(ti, lc->dev);
-    // kobject_put(&lc->dir1);
-    // wait_for_completion(dm_get_completion_from_kobject(&lc->dir1)); // TODO: get
-	kfree(lc);
+    kfree(lc);
 }
 
 static int dmp_map(struct dm_target *ti, struct bio *bio)
@@ -99,7 +107,7 @@ static int dmp_map(struct dm_target *ti, struct bio *bio)
 	case REQ_OP_READ:
 		if (!(bio->bi_opf & REQ_RAHEAD) && !(bio->bi_opf & REQ_META)) {
 			if (strstr(current->comm, "udev") == NULL) {
-				pr_info("r%s", current->comm);
+				pr_info("r %s", current->comm);
 				dmp_read(dev_get_drvdata(dev), bio->bi_iter.bi_size);
 			}
 		}
@@ -227,14 +235,9 @@ void dmp_resume (struct dm_target *ti)
 	struct mapped_device *md = dm_table_get_md(ti->table); // TODO
     struct device *dev = disk_to_dev(dm_disk(md)); // TODO:
 	struct device_stat *st;
-	//pr_info("resume' %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
-    st = dev_get_drvdata(dev); // TODO
-    if (!st) {
-        st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
-        if (!st) {
-            DMERR("no stat");
-			return;
-        }
+	st = dev_get_drvdata(dev); // TODO
+    if (!st->is_init) {
+		st->is_init = true;
         dev_set_drvdata(dev, st);
 		pr_info("resume %llx %llx %llx\n", &dev->kobj, dev->kobj.sd, &dev_attr_device_attr);
 		device_create_file(dev, &dev_attr_device_attr); // TODO: check
@@ -265,8 +268,6 @@ static struct target_type dmp_target = {
 MODULE_AUTHOR("Nikita Verbin");
 MODULE_DESCRIPTION(DM_NAME " store and show statistics");
 MODULE_LICENSE("GPL");
-
-//module_dm(dmp);
 
 static int __init dmp_init(void)
 {
