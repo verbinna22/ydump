@@ -20,7 +20,7 @@ struct device_stat {
 
 #define GET_AVG(sum64, num32) (((num32) == 0) ? 0 : (((sum64) / (num32)) << SECTOR_SHIFT) + ((((sum64) % (num32)) << SECTOR_SHIFT) / (num32)))
 
-static ssize_t device_attr_show(struct device *dev, struct device_attribute *attr,
+static ssize_t statistics_show(struct device *dev, struct device_attribute *attr,
 			    char *buf)
 {
     struct device_stat *st;
@@ -48,7 +48,7 @@ static ssize_t device_attr_show(struct device *dev, struct device_attribute *att
 	return ret;
 }
 
-static DEVICE_ATTR_RO(device_attr);
+static DEVICE_ATTR_RO(statistics);
 
 struct dmp_c {
 	struct dm_dev *dev;
@@ -75,7 +75,7 @@ static void dmp_write(struct device_stat *d, ullong size)
 }
 
 static void remove_file(void *f) {
-    device_remove_file((struct device *)f, &dev_attr_device_attr);
+    device_remove_file((struct device *)f, &dev_attr_statistics);
 }
 
 static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
@@ -243,7 +243,7 @@ static size_t dmp_dax_recovery_write(struct dm_target *ti, pgoff_t pgoff,
 #define dmp_dax_recovery_write NULL
 #endif
 
-void dmp_resume (struct dm_target *ti)
+static void dmp_resume (struct dm_target *ti)
 {
 	struct mapped_device *md = dm_table_get_md(ti->table);
     struct device *dev = disk_to_dev(dm_disk(md));
@@ -253,7 +253,7 @@ void dmp_resume (struct dm_target *ti)
 		mutex_lock(&st->m);
 		if (!st->is_init) {
 			st->is_init = true;
-			if (device_create_file(dev, &dev_attr_device_attr) < 0) {
+			if (device_create_file(dev, &dev_attr_statistics) < 0) {
 				DMWARN("param can't be created\n");
 				return;
 			}
