@@ -9,7 +9,10 @@
 
 #define DM_MSG_PREFIX "dmp"
 
+#define DMP_MAGIC 239
+
 struct device_stat {
+	unsigned char magic;
     uint r_qnum;
     uint w_qnum;
     ullong r_sum_size;
@@ -29,14 +32,14 @@ static ssize_t statistics_show(struct device *dev, struct device_attribute *attr
     int ret = sysfs_emit(buf,
 		"Output:\n"
 		"\tread:\n"
-		"\t\treqs:%u\n"
-		"\t\tavg size:%llu\n"
+		"\t\treqs:\t%u\n"
+		"\t\tavg size:\t%llu\n"
 		"\twrite:\n"
-		"\t\treqs:%u\n"
-		"\t\tavg size:%llu\n"
+		"\t\treqs:\t%u\n"
+		"\t\tavg size:\t%llu\n"
 		"\ttotal:\n"
-		"\t\treqs:%u\n"
-		"\t\tavg size:%llu\n",
+		"\t\treqs:\t%u\n"
+		"\t\tavg size:\t%llu\n",
 		st->r_qnum,
 		GET_AVG(st->r_sum_size, st->r_qnum),
 		st->w_qnum,
@@ -90,12 +93,13 @@ static int dmp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
     struct device *dev = disk_to_dev(dm_disk(md));
 	struct device_stat *st;
 	st = dev_get_drvdata(dev);
-    if (!st) {
+    if (!st || *((unsigned char *)st) != DMP_MAGIC) {
         st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
         if (!st) {
             ti->error = "Cannot allocate device context";
 			return -ENOMEM;
         }
+		st->magic = DMP_MAGIC;
 		dev_set_drvdata(dev, st);
 		mutex_init(&st->m);
     }
