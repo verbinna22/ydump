@@ -19,7 +19,8 @@ dmsetup create dmp1 --table "0 1000 dmp /dev/mapper/zero1"
 Затем можно посмотреть на само устройство (у меня это - `dm-3`)
 
 ```
-# ls -la /dev/mapper/dmp1                                             lrwxrwxrwx. 1 root root 7 мар 19 14:27 /dev/mapper/dmp1 -> ../dm-X
+# ls -la /dev/mapper/dmp1
+lrwxrwxrwx. 1 root root 7 мар 19 14:27 /dev/mapper/dmp1 -> ../dm-X
 ```
 
 ## Тестирование
